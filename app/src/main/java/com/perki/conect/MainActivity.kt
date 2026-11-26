@@ -12,8 +12,14 @@ import android.telephony.*
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.*
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -25,8 +31,12 @@ class MainActivity : Activity() {
     private lateinit var gauge: GaugeView
     private lateinit var info: TextView
     private lateinit var phase: TextView
+    private lateinit var netTv: TextView
     private lateinit var diag: TextView
     private lateinit var panel: LinearLayout
+    private lateinit var mainBox: LinearLayout
+    private lateinit var histBox: LinearLayout
+    private lateinit var histBtn: TextView
     private lateinit var cDown: TextView
     private lateinit var cUp: TextView
     private lateinit var l0: TextView
@@ -37,6 +47,8 @@ class MainActivity : Activity() {
     private lateinit var user: EditText
     private lateinit var pass: EditText
     private val blue = Color.parseColor("#185FA5")
+    private val M = ViewGroup.LayoutParams.MATCH_PARENT
+    private val W = ViewGroup.LayoutParams.WRAP_CONTENT
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun log(s: String) = runOnUiThread { info.append(s + "\n") }
@@ -52,39 +64,97 @@ class MainActivity : Activity() {
     private fun upd(t: TextView, v: String) = runOnUiThread { t.text = "${t.tag}\n$v" }
     private fun row(vararg v: View) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        v.forEach { addView(it, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), dp(4), dp(4), dp(4)) }) }
+        v.forEach { addView(it, LinearLayout.LayoutParams(0, W, 1f).apply { setMargins(dp(4), dp(4), dp(4), dp(4)) }) }
     }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         window.decorView.layoutDirection = View.LAYOUT_DIRECTION_RTL
         requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.READ_PHONE_STATE), 1)
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(12)) }
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setBackgroundColor(Color.parseColor("#0C447C")); setPadding(dp(16), dp(12), dp(16), dp(12)) }
-        head.addView(TextView(this).apply { text = "perki conect"; textSize = 22f; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        head.addView(TextView(this).apply { text = "perki conect"; textSize = 22f; setTextColor(Color.WHITE) }, LinearLayout.LayoutParams(0, W, 1f))
+        histBtn = TextView(this).apply { text = "النتائج السابقة"; textSize = 14f; setTextColor(Color.WHITE); setPadding(dp(8), 0, dp(12), 0); setOnClickListener { toggleHist() } }
+        head.addView(histBtn)
         head.addView(TextView(this).apply { text = "⚙"; textSize = 26f; setTextColor(Color.WHITE); setOnClickListener { panel.visibility = if (panel.visibility == View.GONE) View.VISIBLE else View.GONE } })
-        col.addView(head)
-        col.addView(Switch(this).apply { text = "فحص بيانات الهاتف بدل الواي فاي"; setPadding(0, dp(10), 0, dp(10)); setOnCheckedChangeListener { _, c -> mobile = c } })
+
+        mainBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        histBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        mainBox.addView(Switch(this).apply { text = "فرض بيانات الهاتف (حتى مع الواي فاي)"; setPadding(0, dp(10), 0, dp(10)); setOnCheckedChangeListener { _, c -> mobile = c; refreshNet() } })
         cDown = card("تنزيل"); cUp = card("رفع")
-        col.addView(row(cDown, cUp))
-        phase = TextView(this).apply { text = "جاهز للفحص"; gravity = Gravity.CENTER; setPadding(0, dp(8), 0, 0) }
-        col.addView(phase)
-        gauge = GaugeView(this); col.addView(gauge)
-        col.addView(btn("ابدأ الفحص") { run() })
+        mainBox.addView(row(cDown, cUp))
+        netTv = TextView(this).apply { gravity = Gravity.CENTER; setTextColor(blue); setPadding(0, dp(8), 0, 0) }
+        phase = TextView(this).apply { text = "جاهز للفحص"; gravity = Gravity.CENTER }
+        mainBox.addView(netTv); mainBox.addView(phase)
+        gauge = GaugeView(this); mainBox.addView(gauge)
+        mainBox.addView(btn("ابدأ الفحص") { run() })
         l0 = card("كمون خامل (ms)"); lj = card("تذبذب (ms)"); l1 = card("كمون تحت التنزيل (ms)"); l2 = card("كمون تحت الرفع (ms)")
-        col.addView(row(l0, lj)); col.addView(row(l1, l2))
+        mainBox.addView(row(l0, lj)); mainBox.addView(row(l1, l2))
         diag = TextView(this).apply { visibility = View.GONE; setTextColor(Color.parseColor("#A32D2D")); setBackgroundColor(Color.parseColor("#FDECEA")); setPadding(dp(12), dp(10), dp(12), dp(10)) }
-        col.addView(diag)
+        mainBox.addView(diag)
         panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
         ip = field("عنوان الراوتر مثل 192.168.100.1"); user = field("اسم المستخدم")
         pass = field("كلمة المرور").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
         ip.setText(getSharedPreferences("p", 0).getString("ip", gateway()))
         listOf(ip, user, pass).forEach { panel.addView(it) }
         panel.addView(btn("اختبر الاتصال بالراوتر") { testRouter() })
-        col.addView(panel)
+        mainBox.addView(panel)
         info = TextView(this).apply { setTextIsSelectable(true); setPadding(0, dp(12), 0, 0); textSize = 15f }
-        col.addView(info)
-        setContentView(ScrollView(this).apply { addView(col) })
+        mainBox.addView(info)
+
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(12)) }
+        col.addView(mainBox); col.addView(histBox)
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(head, LinearLayout.LayoutParams(M, W))
+        root.addView(ScrollView(this).apply { addView(col) }, LinearLayout.LayoutParams(M, 0, 1f))
+        setContentView(root)
+    }
+
+    override fun onResume() { super.onResume(); refreshNet() }
+
+    private fun netInfo(): Pair<Boolean, String> = try {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val onWifi = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        val m = mobile || !onWifi
+        Pair(m, if (m) "بيانات الهاتف · " + getSystemService(TelephonyManager::class.java).networkOperatorName
+            else "واي فاي · " + (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).connectionInfo.ssid.trim('"'))
+    } catch (e: Exception) { Pair(mobile, "غير معروفة") }
+
+    private fun refreshNet() { netTv.text = "الشبكة: " + netInfo().second }
+
+    private fun toggleHist() {
+        val show = histBox.visibility == View.GONE
+        histBox.visibility = if (show) View.VISIBLE else View.GONE
+        mainBox.visibility = if (show) View.GONE else View.VISIBLE
+        histBtn.text = if (show) "رجوع" else "النتائج السابقة"
+        if (show) showHistory()
+    }
+
+    private fun showHistory() {
+        histBox.removeAllViews()
+        val arr = JSONArray(getSharedPreferences("h", 0).getString("list", "[]"))
+        if (arr.length() == 0) histBox.addView(TextView(this).apply { text = "لا توجد نتائج محفوظة بعد."; setPadding(0, dp(12), 0, dp(12)) })
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val base = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(o.getLong("t"))) + " · " + o.getString("net") +
+                "\n↓ ${o.getString("down")}   ↑ ${o.getString("up")}\nكمون: خامل ${o.getString("idle")} · تنزيل ${o.getString("l1")} · رفع ${o.getString("l2")} ms" +
+                (if (o.getString("warn").isNotEmpty()) "\n" + o.getString("warn") else "")
+            val d = o.getString("info")
+            var open = false
+            val tv = card("").apply { text = base; textSize = 14f }
+            tv.setOnClickListener { open = !open; tv.text = base + if (open && d.isNotEmpty()) "\n\n" + d else "" }
+            histBox.addView(tv, LinearLayout.LayoutParams(M, W).apply { setMargins(0, dp(6), 0, dp(6)) })
+        }
+        if (arr.length() > 0) histBox.addView(btn("مسح السجل") { getSharedPreferences("h", 0).edit().remove("list").apply(); showHistory() })
+    }
+
+    private fun saveResult(net: String, down: String, up: String, idle: String, jit: String, a1: String, a2: String, warn: String, details: String) {
+        val sp = getSharedPreferences("h", 0)
+        val old = JSONArray(sp.getString("list", "[]"))
+        val o = JSONObject().put("t", System.currentTimeMillis()).put("net", net).put("down", down).put("up", up)
+            .put("idle", idle).put("jit", jit).put("l1", a1).put("l2", a2).put("warn", warn).put("info", details)
+        val out = JSONArray().put(o)
+        for (i in 0 until minOf(old.length(), 99)) out.put(old.get(i))
+        sp.edit().putString("list", out.toString()).apply()
     }
 
     private fun gateway(): String = try {
@@ -108,17 +178,19 @@ class MainActivity : Activity() {
     private fun run() {
         if (busy) return
         busy = true
-        ui { info.text = ""; diag.visibility = View.GONE; gauge.value = 0.0
+        val (useMobile, netName) = netInfo()
+        ui { info.text = ""; diag.visibility = View.GONE; gauge.value = 0.0; netTv.text = "الشبكة: $netName"
             listOf(cDown, cUp, l0, lj, l1, l2).forEach { it.text = "${it.tag}\n—" } }
         thread {
+            var dS = "—"; var uS = "—"; var iS = "—"; var jS = "—"; var a1 = "—"; var a2 = "—"; var warn = ""
             try {
                 var net: Network? = null
-                if (mobile) { ui { phase.text = "جارٍ فحص الشبكة الخلوية…" }; net = mobileTest() ?: return@thread }
+                if (useMobile) { ui { phase.text = "جارٍ فحص الشبكة الخلوية…" }; net = mobileTest() ?: return@thread }
                 else { ui { phase.text = "جارٍ مسح الواي فاي…" }; wifiTest() }
                 ui { phase.text = "جارٍ قياس الكمون…" }
                 val idle = rtt("1.1.1.1", 443, net, 10)
-                upd(l0, f(idle?.first)); upd(lj, f(idle?.second))
-                var warn = ""
+                iS = f(idle?.first); jS = f(idle?.second)
+                upd(l0, iS); upd(lj, jS)
                 for (up in listOf(false, true)) {
                     ui { phase.text = if (up) "جارٍ اختبار الرفع…" else "جارٍ اختبار التنزيل…" }
                     var loaded: Pair<Double, Double>? = null
@@ -127,15 +199,18 @@ class MainActivity : Activity() {
                         catch (e: Exception) { log("فشل اختبار ${if (up) "الرفع" else "التنزيل"}: ${e.message}"); 0.0 }
                     th.join()
                     ui { gauge.value = mbps }
-                    upd(if (up) cUp else cDown, "${"%.1f".format(mbps)} Mbps")
-                    upd(if (up) l2 else l1, f(loaded?.first))
+                    val ms = "%.1f".format(mbps) + " Mbps"
+                    val lat = f(loaded?.first)
+                    if (up) { uS = ms; a2 = lat } else { dS = ms; a1 = lat }
+                    upd(if (up) cUp else cDown, ms)
+                    upd(if (up) l2 else l1, lat)
                     val l = loaded?.first; val i = idle?.first
                     if (l != null && i != null && l > i * 3 && warn.isEmpty())
                         warn = "Bufferbloat مرتفع: الكمون ×${"%.0f".format(l / i)} تحت حمل ${if (up) "الرفع" else "التنزيل"}. فعّل QoS أو SQM في الراوتر وحدّد 85–90% من السرعة."
-                    Thread.sleep(600); ui { gauge.value = 0.0 }
+                    if (!up) { Thread.sleep(800); ui { gauge.value = 0.0 } }
                 }
                 if (warn.isNotEmpty()) ui { diag.text = warn; diag.visibility = View.VISIBLE }
-                ui { phase.text = "اكتمل الفحص" }
+                ui { phase.text = "اكتمل الفحص"; saveResult(netName, dS, uS, iS, jS, a1, a2, warn, info.text.toString()) }
             } catch (e: Exception) { log("خطأ: ${e.message}") }
             finally { busy = false }
         }
@@ -194,7 +269,9 @@ class MainActivity : Activity() {
             finally { s.close() }
             Thread.sleep(100)
         }
-        return if (t.isEmpty()) null else Pair(t.average(), t.max() - t.min())
+        if (t.isEmpty()) return null
+        val j = if (t.size < 2) 0.0 else (1 until t.size).map { Math.abs(t[it] - t[it - 1]) }.average()
+        return Pair(t.average(), j)
     }
 
     private fun transfer(up: Boolean, net: Network?, live: (Double) -> Unit): Double {
