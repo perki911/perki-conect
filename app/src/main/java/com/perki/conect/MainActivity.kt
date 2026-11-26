@@ -50,7 +50,7 @@ class MainActivity : Activity() {
 
     private fun gateway(): String = try {
         val d = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).dhcpInfo.gateway
-        "%d.%d.%d.%d".format(d and 255, d shr 8 and 255, d shr 16 and 255, d shr 24 and 255)
+        if (d == 0) "" else "%d.%d.%d.%d".format(d and 255, d shr 8 and 255, d shr 16 and 255, d shr 24 and 255)
     } catch (e: Exception) { "" }
 
     private fun testRouter() = thread {
@@ -104,7 +104,7 @@ class MainActivity : Activity() {
     private fun mobileTest(): Network? {
         val tm = getSystemService(TelephonyManager::class.java)
         when (val c = tm.allCellInfo?.firstOrNull { it.isRegistered }) {
-            is CellInfoLte -> log("LTE · RSRP ${c.cellSignalStrength.rsrp} dBm · SINR ${c.cellSignalStrength.rssnr}")
+            is CellInfoLte -> log("LTE · RSRP ${c.cellSignalStrength.rsrp} dBm · SINR ${c.cellSignalStrength.rssnr.let { if (it == Int.MAX_VALUE || it == 0) "غير متاح" else it.toString() }}")
             is CellInfoNr -> log("5G · RSRP ${(c.cellSignalStrength as CellSignalStrengthNr).ssRsrp} dBm")
             else -> log("تعذّرت قراءة قوة الشبكة الخلوية")
         }
@@ -135,6 +135,26 @@ class MainActivity : Activity() {
     }
 
     private fun transfer(up: Boolean, net: Network?): Double {
+        if (!up) {
+            val total = java.util.concurrent.atomic.AtomicLong(0)
+            var err = ""
+            val st0 = System.currentTimeMillis(); val end0 = st0 + 7000
+            (1..4).map { thread {
+                val b = ByteArray(65536)
+                try {
+                    while (System.currentTimeMillis() < end0) {
+                        val u0 = URL("https://speed.cloudflare.com/__down?bytes=10000000")
+                        val c0 = (net?.openConnection(u0) ?: u0.openConnection()) as HttpURLConnection
+                        c0.connectTimeout = 5000
+                        if (c0.responseCode != 200) { err = "HTTP ${c0.responseCode}"; c0.disconnect(); break }
+                        c0.inputStream.use { while (System.currentTimeMillis() < end0) { val r = it.read(b); if (r < 0) break; total.addAndGet(r.toLong()) } }
+                        c0.disconnect()
+                    }
+                } catch (e: Exception) { err = e.javaClass.simpleName + ": " + e.message }
+            } }.forEach { it.join() }
+            if (total.get() == 0L) throw Exception(err)
+            return total.get() * 8 / 1e6 / ((System.currentTimeMillis() - st0) / 1000.0)
+        }
         val u = URL(if (up) "https://speed.cloudflare.com/__up" else "https://speed.cloudflare.com/__down?bytes=100000000")
         val c = (net?.openConnection(u) ?: u.openConnection()) as HttpURLConnection
         c.connectTimeout = 5000
